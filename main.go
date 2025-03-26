@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"log"
 	"net/http"
@@ -30,87 +29,85 @@ type MedicalCase struct {
 	FechaRegistro time.Time `json:"fecha_registro"`
 }
 
+// Mapas concurrentes para clientes WebSocket
 var (
-	clients = make(map[*websocket.Conn]bool)
-	mu      sync.Mutex
+	patientClients   sync.Map 
+	expedienteClients sync.Map 
 )
 
+// Configuración del WebSocket
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
 }
 
-func broadCast(message []byte) {
-	mu.Lock()
-	defer mu.Unlock() // Corregido: Unlock en lugar de Lock
-
-	for client := range clients {
-		errSenMessage := client.WriteMessage(websocket.TextMessage, message)
-		if errSenMessage != nil {
-			log.Printf("error to send message: %v", errSenMessage)
-			client.Close()
-			delete(clients, client)
+// Función para enviar mensajes a todos los clientes conectados
+func broadCast(clients *sync.Map, message []byte) {
+	clients.Range(func(key, value interface{}) bool {
+		client, ok := key.(*websocket.Conn)
+		if !ok {
+			return true
 		}
-	}
+		err := client.WriteMessage(websocket.TextMessage, message)
+		if err != nil {
+			log.Printf("Error al enviar mensaje: %v", err)
+			client.Close()
+			clients.Delete(client)
+		}
+		return true
+	})
 }
 
+// Manejo de WebSocket para expedientes médicos
 func sendMessageExpediente(ctx *gin.Context) {
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		log.Printf("error to connect: %v", err)
+		log.Printf("Error al conectar WebSocket: %v", err)
 		return
 	}
 
-	// Registrar cliente
-	mu.Lock()
-	clients[conn] = true
-	mu.Unlock()
+	
+	expedienteClients.Store(conn, true)
 
 	defer func() {
-		mu.Lock()
-		delete(clients, conn)
-		mu.Unlock()
+		expedienteClients.Delete(conn)
 		conn.Close()
 	}()
 
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("error reading message: %v", err)
+			log.Printf("Error al leer mensaje: %v", err)
 			return
 		}
-		broadCast(message)
+		broadCast(&expedienteClients, message)
 	}
 }
 
+// Manejo de WebSocket para pacientes
 func sendMessagePatients(ctx *gin.Context) {
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		log.Printf("error to connect: %v", err)
+		log.Printf("Error al conectar WebSocket: %v", err)
 		return
 	}
 
-	// Registrar cliente
-	mu.Lock()
-	clients[conn] = true
-	mu.Unlock()
+	patientClients.Store(conn, true)
 
 	defer func() {
-		mu.Lock()
-		delete(clients, conn)
-		mu.Unlock()
+		patientClients.Delete(conn)
 		conn.Close()
 	}()
 
 	for {
-		_, message, err := conn.ReadMessage() // Corregido
+		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("error reading message: %v", err)
+			log.Printf("Error al leer mensaje: %v", err)
 			return
 		}
-		log.Printf("message received: %s", message)
-		broadCast(message)
+		log.Printf("Mensaje recibido: %s", message)
+		broadCast(&patientClients, message)
 	}
 }
 
@@ -118,5 +115,5 @@ func main() {
 	engine := gin.Default()
 	engine.GET("/expediente", sendMessageExpediente)
 	engine.GET("/pacientes", sendMessagePatients)
-	engine.Run(":8081") // Corregido: puerto como string
+	engine.Run(":8081")
 }
