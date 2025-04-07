@@ -1,13 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 )
 
 type Patients struct {
@@ -29,20 +32,17 @@ type MedicalCase struct {
 	FechaRegistro time.Time `json:"fecha_registro"`
 }
 
-// Mapas concurrentes para clientes WebSocket
 var (
-	patientClients   sync.Map 
-	expedienteClients sync.Map 
+	patientClients    sync.Map
+	expedienteClients sync.Map
 )
 
-// Configuración del WebSocket
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
 }
 
-// Función para enviar mensajes a todos los clientes conectados
 func broadCast(clients *sync.Map, message []byte) {
 	clients.Range(func(key, value interface{}) bool {
 		client, ok := key.(*websocket.Conn)
@@ -51,7 +51,7 @@ func broadCast(clients *sync.Map, message []byte) {
 		}
 		err := client.WriteMessage(websocket.TextMessage, message)
 		if err != nil {
-			log.Printf("Error al enviar mensaje: %v", err)
+			log.Printf("❌ Error al enviar mensaje: %v", err)
 			client.Close()
 			clients.Delete(client)
 		}
@@ -59,17 +59,14 @@ func broadCast(clients *sync.Map, message []byte) {
 	})
 }
 
-// Manejo de WebSocket para expedientes médicos
 func sendMessageExpediente(ctx *gin.Context) {
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		log.Printf("Error al conectar WebSocket: %v", err)
+		log.Printf("❌ Error al conectar WebSocket /cases/: %v", err)
 		return
 	}
 
-	
 	expedienteClients.Store(conn, true)
-
 	defer func() {
 		expedienteClients.Delete(conn)
 		conn.Close()
@@ -78,23 +75,22 @@ func sendMessageExpediente(ctx *gin.Context) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("Error al leer mensaje: %v", err)
+			log.Printf("🔌 Desconectado /cases/: %v", err)
 			return
 		}
+		log.Printf("📥 Mensaje recibido por WebSocket /cases/: %s", message)
 		broadCast(&expedienteClients, message)
 	}
 }
 
-// Manejo de WebSocket para pacientes
 func sendMessagePatients(ctx *gin.Context) {
 	conn, err := upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		log.Printf("Error al conectar WebSocket: %v", err)
+		log.Printf("❌ Error al conectar WebSocket /patients/: %v", err)
 		return
 	}
 
 	patientClients.Store(conn, true)
-
 	defer func() {
 		patientClients.Delete(conn)
 		conn.Close()
@@ -103,17 +99,54 @@ func sendMessagePatients(ctx *gin.Context) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("Error al leer mensaje: %v", err)
+			log.Printf("🔌 Desconectado /patients/: %v", err)
 			return
 		}
-		log.Printf("Mensaje recibido: %s", message)
+		log.Printf("📥 Mensaje recibido por WebSocket /patients/: %s", message)
 		broadCast(&patientClients, message)
 	}
 }
 
 func main() {
+	// Cargar .env si existe
+	if err := godotenv.Load(); err != nil {
+		log.Println("⚠️ No se pudo cargar .env (quizás no es necesario)")
+	}
+
 	engine := gin.Default()
-	engine.GET("/expediente", sendMessageExpediente)
-	engine.GET("/pacientes", sendMessagePatients)
-	engine.Run(":8081")
+
+	// Rutas WebSocket (GET)
+	engine.GET("/patients/", sendMessagePatients)
+	engine.GET("/cases/", sendMessageExpediente)
+
+	// Ruta POST para casos (API Consumer puede enviar aquí)
+	engine.POST("/cases/", func(ctx *gin.Context) {
+		var data MedicalCase
+		if err := ctx.BindJSON(&data); err != nil {
+			ctx.JSON(400, gin.H{"error": "Datos inválidos"})
+			return
+		}
+
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
+			ctx.JSON(500, gin.H{"error": "Error al convertir mensaje"})
+			return
+		}
+
+		log.Printf("📨 Mensaje recibido por POST /cases/: %s", string(jsonBytes))
+		broadCast(&expedienteClients, jsonBytes)
+
+		ctx.JSON(200, gin.H{"status": "mensaje recibido"})
+	})
+
+	// Puerto desde .env o por defecto 8081
+	port := os.Getenv("APP_PORT")
+	if port == "" {
+		port = "8081"
+	}
+
+	log.Printf("🚀 Servidor WebSocket corriendo en :%s", port)
+	if err := engine.Run(":" + port); err != nil {
+		log.Fatalf("❌ Error al iniciar servidor: %v", err)
+	}
 }
