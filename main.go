@@ -110,33 +110,33 @@ func sendMessagePatients(ctx *gin.Context) {
 func main() {
 	// Cargar .env si existe
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ No se pudo cargar .env (quizás no es necesario)")
+		log.Println("⚠️ No se pudo cargar .env (quizás no es necesario en producción)")
 	}
 
 	engine := gin.Default()
 
-	// Rutas WebSocket (GET)
+	// WebSocket endpoints
 	engine.GET("/patients/", sendMessagePatients)
 	engine.GET("/cases/", sendMessageExpediente)
 
-	// Ruta POST para casos (API Consumer puede enviar aquí)
+	// API REST POST para casos médicos
 	engine.POST("/cases/", func(ctx *gin.Context) {
 		var data MedicalCase
 		if err := ctx.BindJSON(&data); err != nil {
-			ctx.JSON(400, gin.H{"error": "Datos inválidos"})
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "Datos inválidos"})
 			return
 		}
 
 		jsonBytes, err := json.Marshal(data)
 		if err != nil {
-			ctx.JSON(500, gin.H{"error": "Error al convertir mensaje"})
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Error al convertir mensaje"})
 			return
 		}
 
 		log.Printf("📨 Mensaje recibido por POST /cases/: %s", string(jsonBytes))
 		broadCast(&expedienteClients, jsonBytes)
 
-		ctx.JSON(200, gin.H{"status": "mensaje recibido"})
+		ctx.JSON(http.StatusOK, gin.H{"status": "mensaje recibido"})
 	})
 
 	// Puerto desde .env o por defecto 8081
@@ -145,7 +145,7 @@ func main() {
 		port = "8081"
 	}
 
-	log.Printf("🚀 Servidor WebSocket corriendo en :%s", port)
+	log.Printf("🚀 Servidor WebSocket y REST corriendo en puerto :%s", port)
 	if err := engine.Run(":" + port); err != nil {
 		log.Fatalf("❌ Error al iniciar servidor: %v", err)
 	}
